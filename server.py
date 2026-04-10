@@ -875,13 +875,16 @@ async def shopify_create_webhook(params: CreateWebhookInput) -> str:
 
 class BearerAuthMiddleware:
     """
-    Pure ASGI middleware that requires a Bearer token on every HTTP request.
-    If the Authorization header does not match 'Bearer <MCP_AUTH_TOKEN>',
-    the request is rejected with a 401 response before it reaches any tool.
+    Pure ASGI middleware that requires a token on every HTTP request.
+    Accepts the token in EITHER of two places:
+      1. Authorization header:  Authorization: Bearer <MCP_AUTH_TOKEN>
+      2. Query string parameter: ?auth=<MCP_AUTH_TOKEN>
+    If neither is present/valid, the request is rejected with a 401.
     """
 
     def __init__(self, app, token: str):
         self.app = app
+        self._token = token
         self._expected_header = f"Bearer {token}".encode("utf-8")
 
     async def __call__(self, scope, receive, send):
@@ -890,13 +893,27 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        auth_header = None
+        authorized = False
+
+        # Check 1: Authorization: Bearer <token> header
         for name, value in scope.get("headers", []):
-            if name == b"authorization":
-                auth_header = value
+            if name == b"authorization" and value == self._expected_header:
+                authorized = True
                 break
 
-        if auth_header != self._expected_header:
+        # Check 2: ?auth=<token> query parameter
+        if not authorized:
+            query_string = scope.get("query_string", b"").decode("utf-8", errors="ignore")
+            if query_string:
+                for pair in query_string.split("&"):
+                    if "=" not in pair:
+                        continue
+                    key, _, val = pair.partition("=")
+                    if key == "auth" and val == self._token:
+                        authorized = True
+                        break
+
+        if not authorized:
             client = scope.get("client")
             client_str = f"{client[0]}:{client[1]}" if client else "unknown"
             logger.warning(f"Rejected unauthenticated MCP request from {client_str}")
@@ -912,7 +929,7 @@ class BearerAuthMiddleware:
                 "type": "http.response.body",
                 "body": (
                     b'{"jsonrpc":"2.0","id":null,"error":'
-                    b'{"code":-32001,"message":"Unauthorized: missing or invalid Authorization header"}}'
+                    b'{"code":-32001,"message":"Unauthorized: missing or invalid token"}}'
                 ),
             })
             return
