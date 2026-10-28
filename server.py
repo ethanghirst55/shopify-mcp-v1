@@ -955,4 +955,10 @@ if __name__ == "__main__":
     protected_app = BearerAuthMiddleware(app, MCP_AUTH_TOKEN)
 
     logger.info(f"Starting protected Shopify MCP server on 0.0.0.0:{PORT}")
-    uvicorn.run(protected_app, host="0.0.0.0", port=PORT)
+    # Clients may connect with ?auth=<MCP_AUTH_TOKEN>, and uvicorn logs the whole
+    # request line. log_redact replaces the value of auth=/key=/token= with
+    # REDACTED before anything is written (Railway keeps the log).
+    from log_redact import harden_root_logging, uvicorn_log_config
+
+    harden_root_logging()
+    uvicorn.run(protected_app, host="0.0.0.0", port=PORT, log_config=uvicorn_log_config())
